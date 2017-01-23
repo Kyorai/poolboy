@@ -26,34 +26,34 @@
 -endif.
 
 -record(state, {
-    supervisor :: pid(),
-    workers :: poolboy_queue(),
-    waiting :: poolboy_queue(),
-    monitors :: ets:tid(),
-    size = 5 :: non_neg_integer(),
-    overflow = 0 :: non_neg_integer(),
-    max_overflow = 10 :: non_neg_integer()
-}).
+          supervisor :: pid() | undefined,
+          workers :: poolboy_queue() | undefined,
+          waiting :: poolboy_queue(),
+          monitors :: ets:tid(),
+          size = 5 :: non_neg_integer(),
+          overflow = 0 :: non_neg_integer(),
+          max_overflow = 10 :: non_neg_integer()
+         }).
 
--spec checkout(Pool :: node()) -> pid().
+-spec checkout(Pool :: node() | pid()) -> pid().
 checkout(Pool) ->
     checkout(Pool, true).
 
--spec checkout(Pool :: node(), Block :: boolean()) -> pid() | full.
+-spec checkout(Pool :: node() | pid(), Block :: boolean()) -> pid() | full.
 checkout(Pool, Block) ->
     checkout(Pool, Block, ?TIMEOUT).
 
--spec checkout(Pool :: node(), Block :: boolean(), Timeout :: timeout())
-    -> pid() | full.
+-spec checkout(Pool :: node() | pid(), Block :: boolean(), Timeout :: timeout())
+              -> pid() | full.
 checkout(Pool, Block, Timeout) ->
     gen_fsm:sync_send_event(Pool, {checkout, Block, Timeout}, Timeout).
 
--spec checkin(Pool :: node(), Worker :: pid()) -> ok.
+-spec checkin(Pool :: pid(), Worker :: pid()) -> ok.
 checkin(Pool, Worker) when is_pid(Worker) ->
     gen_fsm:send_event(Pool, {checkin, Worker}).
 
--spec transaction(Pool :: node(), Fun :: fun((Worker :: pid()) -> any()))
-    -> any().
+-spec transaction(Pool :: node() | pid(), Fun :: fun((Worker :: pid()) -> any()))
+                 -> any().
 transaction(Pool, Fun) ->
     Worker = poolboy:checkout(Pool),
     try
@@ -63,38 +63,38 @@ transaction(Pool, Fun) ->
     end.
 
 -spec child_spec(Pool :: node(), PoolArgs :: proplists:proplist())
-    -> supervisor:child_spec().
+                -> supervisor:child_spec().
 child_spec(Pool, PoolArgs) ->
     child_spec(Pool, PoolArgs, []).
 
 -spec child_spec(Pool :: node(),
                  PoolArgs :: proplists:proplist(),
                  WorkerArgs :: proplists:proplist())
-    -> supervisor:child_spec().
+                -> supervisor:child_spec().
 child_spec(Pool, PoolArgs, WorkerArgs) ->
     {Pool, {poolboy, start_link, [PoolArgs, WorkerArgs]},
      permanent, 5000, worker, [poolboy]}.
 
 -spec start(PoolArgs :: proplists:proplist())
-    -> {ok, pid()}.
+           -> {ok, pid()}.
 start(PoolArgs) ->
     start(PoolArgs, PoolArgs).
 
 -spec start(PoolArgs :: proplists:proplist(),
             WorkerArgs:: proplists:proplist())
-    -> {ok, pid()}.
+           -> {ok, pid()}.
 start(PoolArgs, WorkerArgs) ->
     start_pool(start, PoolArgs, WorkerArgs).
 
 -spec start_link(PoolArgs :: proplists:proplist())
-    -> {ok, pid()}.
+                -> {ok, pid()}.
 start_link(PoolArgs)  ->
     %% for backwards compatability, pass the pool args as the worker args as well
     start_link(PoolArgs, PoolArgs).
 
 -spec start_link(PoolArgs :: proplists:proplist(),
                  WorkerArgs:: proplists:proplist())
-    -> {ok, pid()}.
+                -> {ok, pid()}.
 start_link(PoolArgs, WorkerArgs)  ->
     start_pool(start_link, PoolArgs, WorkerArgs).
 
@@ -124,10 +124,10 @@ init([_ | Rest], WorkerArgs, State) ->
 init([], _WorkerArgs, #state{size=Size, supervisor=Sup, max_overflow=MaxOverflow}=State) ->
     Workers = prepopulate(Size, Sup),
     StartState = case Size of
-        Size when Size < 1, MaxOverflow < 1 -> full;
-        Size when Size < 1 -> overflow;
-        Size -> ready
-    end,
+                     Size when Size < 1, MaxOverflow < 1 -> full;
+                     Size when Size < 1 -> overflow;
+                     Size -> ready
+                 end,
     {ok, StartState, State#state{workers=Workers}}.
 
 ready({checkin, Pid}, State) ->
@@ -154,10 +154,10 @@ ready({checkout, Block, Timeout}, {FromPid, _}=From, State) ->
             Ref = erlang:monitor(process, FromPid),
             true = ets:insert(Monitors, {Pid, Ref}),
             NextState = case queue:is_empty(Left) of
-                true when MaxOverflow < 1 -> full;
-                true -> overflow;
-                false -> ready
-            end,
+                            true when MaxOverflow < 1 -> full;
+                            true -> overflow;
+                            false -> ready
+                        end,
             {reply, Pid, NextState, State#state{workers=Left}};
         {empty, Empty} when MaxOverflow > 0 ->
             {Pid, Ref} = new_worker(Sup, FromPid),
@@ -179,9 +179,9 @@ overflow({checkin, Pid}, #state{overflow=0}=State) ->
             true = erlang:demonitor(Ref),
             true = ets:delete(Monitors, Pid),
             NextState = case State#state.size > 0 of
-                true  -> ready;
-                false -> overflow
-            end,
+                            true  -> ready;
+                            false -> overflow
+                        end,
             Workers = queue:in(Pid, State#state.workers),
             {next_state, NextState, State#state{overflow=0, workers=Workers}};
         [] ->
@@ -219,9 +219,9 @@ overflow({checkout, _Block, _Timeout}, {From, _}, State) ->
     true = ets:insert(State#state.monitors, {Pid, Ref}),
     NewOverflow = Overflow + 1,
     NextState = case NewOverflow >= MaxOverflow of
-        true  -> full;
-        false -> overflow
-    end,
+                    true  -> full;
+                    false -> overflow
+                end,
     {reply, Pid, NextState, State#state{overflow=NewOverflow}};
 overflow(_Event, _From, State) ->
     {reply, ok, overflow, State}.

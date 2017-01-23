@@ -1,6 +1,10 @@
 {application, poolboy, [
     {description, "A hunky Erlang worker pool factory"},
-    {vsn, git},
+    {vsn, "0.8.2"},
+    {pkg_name, "basho_poolboy"},
     {applications, [kernel, stdlib]},
-    {registered, [poolboy]}
+    {registered, [poolboy]},
+    {maintainers,["basho", "Heinz N. Gies"]},
+    {licenses,["Apache"]},
+    {links,[{"Github","https://github.com/project-fif/poolboy"}]}
 ]}.
