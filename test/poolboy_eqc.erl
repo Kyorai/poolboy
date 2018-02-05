@@ -1,5 +1,5 @@
 -module(poolboy_eqc).
--compile([poolboy_test_]).
+-compile([poolboy_test_]). %%FIXME: Probably needs fix by adding missing functions.
 
 -ifdef(TEST).
 -ifdef(EQC).

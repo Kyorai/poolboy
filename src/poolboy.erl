@@ -12,7 +12,7 @@
 -ifdef(PULSE).
 -compile(export_all).
 -compile({parse_transform, pulse_instrument}).
--compile({pulse_replace_module, [{gen_fsm, pulse_gen_fsm},
+-compile({pulse_replace_module, [{gen_statem, pulse_gen_statem}, %%FIXME: Not sure if pulse already provides customized versions of gen_statem
                                  {gen_server, pulse_gen_server},
                                  {supervisor, pulse_supervisor}]}).
 -endif.
