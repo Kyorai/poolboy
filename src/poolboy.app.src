@@ -1,6 +1,6 @@
 {application, poolboy, [
     {description, "A hunky Erlang worker pool factory"},
-    {vsn, "0.8.2"},
+    {vsn, "0.8.3"},
     {pkg_name, "basho_poolboy"},
     {applications, [kernel, stdlib]},
     {registered, [poolboy]},
