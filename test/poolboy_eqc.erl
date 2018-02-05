@@ -1,5 +1,5 @@
 -module(poolboy_eqc).
--compile([export_all]).
+-compile([poolboy_test_]).
 
 -ifdef(TEST).
 -ifdef(EQC).
