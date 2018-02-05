@@ -6,5 +6,5 @@
     {registered, [poolboy]},
     {maintainers,["basho", "Heinz N. Gies"]},
     {licenses,["Apache"]},
-    {links,[{"Github","https://github.com/project-fif/poolboy"}]}
+    {links,[{"Github","https://github.com/Kyorai/poolboy"}]}
 ]}.
