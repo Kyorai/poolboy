@@ -1,7 +1,7 @@
 %% Poolboy - A hunky Erlang worker pool factory
 
 -module(poolboy).
--behaviour(gen_fsm).
+-behaviour(gen_fsm_compat).
 
 -export([checkout/1, checkout/2, checkout/3, checkin/2, transaction/2,
          child_spec/2, child_spec/3, start/1, start/2, start_link/1,
@@ -13,6 +13,7 @@
 -compile(export_all).
 -compile({parse_transform, pulse_instrument}).
 -compile({pulse_replace_module, [{gen_fsm, pulse_gen_fsm},
+                                 {gen_fsm_compat, pulse_gen_fsm},
                                  {gen_server, pulse_gen_server},
                                  {supervisor, pulse_supervisor}]}).
 -endif.
@@ -46,11 +47,11 @@ checkout(Pool, Block) ->
 -spec checkout(Pool :: node() | pid(), Block :: boolean(), Timeout :: timeout())
               -> pid() | full.
 checkout(Pool, Block, Timeout) ->
-    gen_fsm:sync_send_event(Pool, {checkout, Block, Timeout}, Timeout).
+    gen_fsm_compat:sync_send_event(Pool, {checkout, Block, Timeout}, Timeout).
 
 -spec checkin(Pool :: pid(), Worker :: pid()) -> ok.
 checkin(Pool, Worker) when is_pid(Worker) ->
-    gen_fsm:send_event(Pool, {checkin, Worker}).
+    gen_fsm_compat:send_event(Pool, {checkin, Worker}).
 
 -spec transaction(Pool :: node() | pid(), Fun :: fun((Worker :: pid()) -> any()))
                  -> any().
@@ -100,11 +101,11 @@ start_link(PoolArgs, WorkerArgs)  ->
 
 -spec stop(Pool :: node()) -> ok.
 stop(Pool) ->
-    gen_fsm:sync_send_all_state_event(Pool, stop).
+    gen_fsm_compat:sync_send_all_state_event(Pool, stop).
 
 -spec status(Pool :: node()) -> {atom(), integer(), integer(), integer()}.
 status(Pool) ->
-    gen_fsm:sync_send_all_state_event(Pool, status).
+    gen_fsm_compat:sync_send_all_state_event(Pool, status).
 
 init({PoolArgs, WorkerArgs}) ->
     process_flag(trap_exit, true),
@@ -316,9 +317,9 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 start_pool(StartFun, PoolArgs, WorkerArgs) ->
     case proplists:get_value(name, PoolArgs) of
         undefined ->
-            gen_fsm:StartFun(?MODULE, {PoolArgs, WorkerArgs}, []);
+            gen_fsm_compat:StartFun(?MODULE, {PoolArgs, WorkerArgs}, []);
         Name ->
-            gen_fsm:StartFun(Name, ?MODULE, {PoolArgs, WorkerArgs}, [])
+            gen_fsm_compat:StartFun(Name, ?MODULE, {PoolArgs, WorkerArgs}, [])
     end.
 
 new_worker(Sup) ->
@@ -366,7 +367,7 @@ checkin_while_full(Pid, State) ->
                 true ->
                     Ref1 = erlang:monitor(process, FromPid),
                     true = ets:insert(Monitors, {Pid, Ref1}),
-                    gen_fsm:reply(From, Pid),
+                    gen_fsm_compat:reply(From, Pid),
                     {next_state, full, State#state{waiting=Left}};
                 false ->
                     checkin_while_full(Pid, State#state{waiting=Left})
@@ -404,7 +405,7 @@ handle_worker_exit(Pid, StateName, State) ->
                             MonitorRef = erlang:monitor(process, FromPid),
                             NewWorker = new_worker(Sup),
                             true = ets:insert(Monitors, {NewWorker, MonitorRef}),
-                            gen_fsm:reply(From, NewWorker),
+                            gen_fsm_compat:reply(From, NewWorker),
                             {next_state, full, State#state{waiting=LeftWaiting}};
                         false ->
                             handle_worker_exit(Pid, StateName, State#state{waiting=LeftWaiting})
@@ -422,7 +423,7 @@ handle_worker_exit(Pid, StateName, State) ->
                             MonitorRef = erlang:monitor(process, FromPid),
                             NewWorker = new_worker(Sup),
                             true = ets:insert(Monitors, {NewWorker, MonitorRef}),
-                            gen_fsm:reply(From, NewWorker),
+                            gen_fsm_compat:reply(From, NewWorker),
                             {next_state, full, State#state{waiting=LeftWaiting}};
                         _ ->
                             handle_worker_exit(Pid, StateName, State#state{waiting=LeftWaiting})
