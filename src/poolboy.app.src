@@ -2,7 +2,7 @@
     {description, "A hunky Erlang worker pool factory"},
     {vsn, "0.8.3"},
     {pkg_name, "basho_poolboy"},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, gen_fsm_compat]},
     {registered, [poolboy]},
     {maintainers,["basho", "Heinz N. Gies"]},
     {licenses,["Apache"]},

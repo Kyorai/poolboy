@@ -1,24 +1,23 @@
 %% Poolboy - A hunky Erlang worker pool factory
 
 -module(poolboy).
--behaviour(gen_statem).
+-behaviour(gen_fsm_compat).
 
 -export([checkout/1, checkout/2, checkout/3, checkin/2, transaction/2,
          child_spec/2, child_spec/3, start/1, start/2, start_link/1,
          start_link/2, stop/1, status/1]).
--export([init/1, ready/3, overflow/3, full/3,
-         callback_mode/0,  terminate/3,
+-export([init/1, ready/2, ready/3, overflow/2, overflow/3, full/2, full/3,
+         handle_event/3, handle_sync_event/4, handle_info/3, terminate/3,
          code_change/4]).
 -ifdef(PULSE).
 -compile(export_all).
 -compile({parse_transform, pulse_instrument}).
--compile({pulse_replace_module, [{gen_statem, pulse_gen_statem}, %%FIXME: Not sure if pulse already provides customized versions of gen_statem
+-compile({pulse_replace_module, [{gen_fsm, pulse_gen_fsm},
+                                 {gen_fsm_compat, pulse_gen_fsm},
                                  {gen_server, pulse_gen_server},
                                  {supervisor, pulse_supervisor}]}).
 -endif.
 
-
--include_lib("eunit/include/eunit.hrl").
 -define(TIMEOUT, 5000).
 
 -ifdef(namespaced_types).
@@ -28,16 +27,16 @@
 -endif.
 
 -record(state, {
-    supervisor :: pid() | undefined,
-    workers :: poolboy_queue() | undefined,
-    waiting :: poolboy_queue(),
-    monitors :: ets:tid(),
-    size = 5 :: non_neg_integer(),
-    overflow = 0 :: non_neg_integer(),
-    max_overflow = 10 :: non_neg_integer()
-}).
+          supervisor :: pid() | undefined,
+          workers :: poolboy_queue() | undefined,
+          waiting :: poolboy_queue(),
+          monitors :: ets:tid(),
+          size = 5 :: non_neg_integer(),
+          overflow = 0 :: non_neg_integer(),
+          max_overflow = 10 :: non_neg_integer()
+         }).
 
--spec checkout(Pool :: node()) -> pid().
+-spec checkout(Pool :: node() | pid()) -> pid().
 checkout(Pool) ->
     checkout(Pool, true).
 
@@ -48,11 +47,11 @@ checkout(Pool, Block) ->
 -spec checkout(Pool :: node() | pid(), Block :: boolean(), Timeout :: timeout())
               -> pid() | full.
 checkout(Pool, Block, Timeout) ->
-    gen_statem:call(Pool, {checkout, Block, Timeout},{dirty_timeout, Timeout}).
+    gen_fsm_compat:sync_send_event(Pool, {checkout, Block, Timeout}, Timeout).
 
 -spec checkin(Pool :: pid(), Worker :: pid()) -> ok.
 checkin(Pool, Worker) when is_pid(Worker) ->
-    gen_statem:cast(Pool, {checkin, Worker}).
+    gen_fsm_compat:send_event(Pool, {checkin, Worker}).
 
 -spec transaction(Pool :: node() | pid(), Fun :: fun((Worker :: pid()) -> any()))
                  -> any().
@@ -102,11 +101,11 @@ start_link(PoolArgs, WorkerArgs)  ->
 
 -spec stop(Pool :: node()) -> ok.
 stop(Pool) ->
-    gen_statem:call(Pool, stop).
+    gen_fsm_compat:sync_send_all_state_event(Pool, stop).
 
 -spec status(Pool :: node()) -> {atom(), integer(), integer(), integer()}.
 status(Pool) ->
-    gen_statem:call(Pool, status).
+    gen_fsm_compat:sync_send_all_state_event(Pool, status).
 
 init({PoolArgs, WorkerArgs}) ->
     process_flag(trap_exit, true),
@@ -132,10 +131,7 @@ init([], _WorkerArgs, #state{size=Size, supervisor=Sup, max_overflow=MaxOverflow
                  end,
     {ok, StartState, State#state{workers=Workers}}.
 
-callback_mode() ->
-    state_functions.
-
-ready(cast, {checkin, Pid}, State) ->
+ready({checkin, Pid}, State) ->
     Monitors = State#state.monitors,
     case ets:lookup(Monitors, Pid) of
         [{Pid, Ref}] ->
@@ -146,8 +142,10 @@ ready(cast, {checkin, Pid}, State) ->
         [] ->
             {next_state, ready, State}
     end;
+ready(_Event, State) ->
+    {next_state, ready, State}.
 
-ready({call, {FromPid, _}=From}, {checkout, Block, Timeout}, State) ->
+ready({checkout, Block, Timeout}, {FromPid, _}=From, State) ->
     #state{supervisor = Sup,
            workers = Workers,
            monitors = Monitors,
@@ -157,25 +155,25 @@ ready({call, {FromPid, _}=From}, {checkout, Block, Timeout}, State) ->
             Ref = erlang:monitor(process, FromPid),
             true = ets:insert(Monitors, {Pid, Ref}),
             NextState = case queue:is_empty(Left) of
-                true when MaxOverflow < 1 -> full;
-                true -> overflow;
-                false -> ready
-            end,
-            {next_state, NextState, State#state{workers=Left}, [{reply, From, Pid}]};
+                            true when MaxOverflow < 1 -> full;
+                            true -> overflow;
+                            false -> ready
+                        end,
+            {reply, Pid, NextState, State#state{workers=Left}};
         {empty, Empty} when MaxOverflow > 0 ->
             {Pid, Ref} = new_worker(Sup, FromPid),
             true = ets:insert(Monitors, {Pid, Ref}),
-            {next_state, overflow, State#state{workers=Empty, overflow=1}, [{reply, From, Pid}]};
+            {reply, Pid, overflow, State#state{workers=Empty, overflow=1}};
         {empty, Empty} when Block =:= false ->
-            {next_state, full, State#state{workers=Empty}, [{reply, From, full}]};
+            {reply, full, full, State#state{workers=Empty}};
         {empty, Empty} ->
             Waiting = add_waiting(From, Timeout, State#state.waiting),
             {next_state, full, State#state{workers=Empty, waiting=Waiting}}
     end;
-ready(EventType, Event, State) ->
-    handle_common_event(EventType, Event, ready, State).
+ready(_Event, _From, State) ->
+    {reply, ok, ready, State}.
 
-overflow(cast, {checkin, Pid}, #state{overflow=0}=State) ->
+overflow({checkin, Pid}, #state{overflow=0}=State) ->
     Monitors = State#state.monitors,
     case ets:lookup(Monitors, Pid) of
         [{Pid, Ref}] ->
@@ -190,7 +188,7 @@ overflow(cast, {checkin, Pid}, #state{overflow=0}=State) ->
         [] ->
             {next_state, overflow, State}
     end;
-overflow(cast, {checkin, Pid}, State) ->
+overflow({checkin, Pid}, State) ->
     #state{supervisor=Sup, monitors=Monitors, overflow=Overflow} = State,
     case ets:lookup(Monitors, Pid) of
         [{Pid, Ref}] ->
@@ -201,8 +199,10 @@ overflow(cast, {checkin, Pid}, State) ->
         [] ->
             {next_state, overflow, State}
     end;
+overflow(_Event, State) ->
+    {next_state, overflow, State}.
 
-overflow({call, From}, {checkout, Block, Timeout},
+overflow({checkout, Block, Timeout}, From,
          #state{overflow=Overflow,
                 max_overflow=MaxOverflow}=State) when Overflow >= MaxOverflow ->
     case Block of
@@ -210,24 +210,24 @@ overflow({call, From}, {checkout, Block, Timeout},
             Waiting = add_waiting(From, Timeout, State#state.waiting),
             {next_state, full, State#state{waiting=Waiting}};
         false ->
-            {next_state, full, State, [{reply, From, full}]}
+            {reply, full, full, State}
     end;
-overflow({call,{FromPid, _}=From}, {checkout, _Block, _Timeout}, State) ->
+overflow({checkout, _Block, _Timeout}, {From, _}, State) ->
     #state{supervisor = Sup,
            overflow = Overflow,
            max_overflow = MaxOverflow} = State,
-    {Pid, Ref} = new_worker(Sup, FromPid),
+    {Pid, Ref} = new_worker(Sup, From),
     true = ets:insert(State#state.monitors, {Pid, Ref}),
     NewOverflow = Overflow + 1,
     NextState = case NewOverflow >= MaxOverflow of
-        true  -> full;
-        false -> overflow
-    end,
-    {next_state, NextState, State#state{overflow=NewOverflow}, [{reply, From, Pid}]};
-overflow(EventType, Event, State) ->
-    handle_common_event(EventType, Event, overflow, State).
+                    true  -> full;
+                    false -> overflow
+                end,
+    {reply, Pid, NextState, State#state{overflow=NewOverflow}};
+overflow(_Event, _From, State) ->
+    {reply, ok, overflow, State}.
 
-full(cast, {checkin, Pid}, State) ->
+full({checkin, Pid}, State) ->
     #state{monitors = Monitors} = State,
     case ets:lookup(Monitors, Pid) of
         [{Pid, Ref}] ->
@@ -237,42 +237,44 @@ full(cast, {checkin, Pid}, State) ->
         [] ->
             {next_state, full, State}
     end;
+full(_Event, State) ->
+    {next_state, full, State}.
 
-full({call, From}, {checkout, true, Timeout},  State) ->
+full({checkout, true, Timeout}, From, State) ->
     Waiting = add_waiting(From, Timeout, State#state.waiting),
     {next_state, full, State#state{waiting=Waiting}};
-full({call, From}, {checkout, false, _Timeout},  State) ->
-    {next_state, full, State, [{reply, From, full}]};
-full(EventType, Event, State) ->
-    handle_common_event(EventType, Event, full, State).
+full({checkout, false, _Timeout}, _From, State) ->
+    {reply, full, full, State};
+full(_Event, _From, State) ->
+    {reply, ok, full, State}.
 
-handle_common_event(cast, _EventData, StateName, State) ->
-    {next_state, StateName, State};
+handle_event(_Event, StateName, State) ->
+    {next_state, StateName, State}.
 
-handle_common_event({call, From}, status, StateName, State) ->
-    {keep_state_and_data, [{reply, From, {StateName, queue:len(State#state.workers), State#state.overflow,
-             ets:info(State#state.monitors, size)}}]};
-handle_common_event({call, From}, get_avail_workers, StateName, State) ->
+handle_sync_event(status, _From, StateName, State) ->
+    {reply, {StateName, queue:len(State#state.workers), State#state.overflow,
+             ets:info(State#state.monitors, size)},
+     StateName, State};
+handle_sync_event(get_avail_workers, _From, StateName, State) ->
     Workers = State#state.workers,
     WorkerList = queue:to_list(Workers),
-    {next_state, StateName, State, [{reply, From, WorkerList}]};
-
-handle_common_event({call, From}, get_all_workers, _StateName, State) ->
+    {reply, WorkerList, StateName, State};
+handle_sync_event(get_all_workers, _From, StateName, State) ->
     Sup = State#state.supervisor,
     WorkerList = supervisor:which_children(Sup),
-    {keep_state_and_data, [{reply, From, WorkerList}]};
-handle_common_event({call, From}, get_all_monitors, _StateName, State) ->
+    {reply, WorkerList, StateName, State};
+handle_sync_event(get_all_monitors, _From, StateName, State) ->
     Monitors = ets:tab2list(State#state.monitors),
-    {keep_state_and_data, [{reply, From, Monitors}]};
-handle_common_event({call, From}, stop, _StateName, State) ->
+    {reply, Monitors, StateName, State};
+handle_sync_event(stop, _From, _StateName, State) ->
     Sup = State#state.supervisor,
     true = exit(Sup, shutdown),
-    {stop_and_reply, normal, {reply, From, ok}, State};
-handle_common_event({call, From}, _Event, _StateName, _State) ->
+    {stop, normal, ok, State};
+handle_sync_event(_Event, _From, StateName, State) ->
     Reply = {error, invalid_message},
-    {keep_state_and_data, [{reply, From, Reply}]};
+    {reply, Reply, StateName, State}.
 
-handle_common_event(info, {'DOWN', Ref, _, _, _}, StateName, State) ->
+handle_info({'DOWN', Ref, _, _, _}, StateName, State) ->
     case ets:match(State#state.monitors, {'$1', Ref}) of
         [[Pid]] ->
             Sup = State#state.supervisor,
@@ -286,7 +288,7 @@ handle_common_event(info, {'DOWN', Ref, _, _, _}, StateName, State) ->
         [] ->
             {next_state, StateName, State}
     end;
-handle_common_event(info, {'EXIT', Pid, _Reason}, StateName, State) ->
+handle_info({'EXIT', Pid, _Reason}, StateName, State) ->
     #state{supervisor = Sup,
            monitors = Monitors} = State,
     case ets:lookup(Monitors, Pid) of
@@ -303,7 +305,7 @@ handle_common_event(info, {'EXIT', Pid, _Reason}, StateName, State) ->
                     {next_state, StateName, State}
             end
     end;
-handle_common_event(info, _Info, StateName, State) ->
+handle_info(_Info, StateName, State) ->
     {next_state, StateName, State}.
 
 terminate(_Reason, _StateName, _State) ->
@@ -315,9 +317,9 @@ code_change(_OldVsn, StateName, State, _Extra) ->
 start_pool(StartFun, PoolArgs, WorkerArgs) ->
     case proplists:get_value(name, PoolArgs) of
         undefined ->
-            gen_statem:StartFun(?MODULE, {PoolArgs, WorkerArgs}, []);
+            gen_fsm_compat:StartFun(?MODULE, {PoolArgs, WorkerArgs}, []);
         Name ->
-            gen_statem:StartFun(Name, ?MODULE, {PoolArgs, WorkerArgs}, [])
+            gen_fsm_compat:StartFun(Name, ?MODULE, {PoolArgs, WorkerArgs}, [])
     end.
 
 new_worker(Sup) ->
@@ -365,7 +367,7 @@ checkin_while_full(Pid, State) ->
                 true ->
                     Ref1 = erlang:monitor(process, FromPid),
                     true = ets:insert(Monitors, {Pid, Ref1}),
-                    gen_statem:reply(From, Pid),
+                    gen_fsm_compat:reply(From, Pid),
                     {next_state, full, State#state{waiting=Left}};
                 false ->
                     checkin_while_full(Pid, State#state{waiting=Left})
@@ -403,7 +405,7 @@ handle_worker_exit(Pid, StateName, State) ->
                             MonitorRef = erlang:monitor(process, FromPid),
                             NewWorker = new_worker(Sup),
                             true = ets:insert(Monitors, {NewWorker, MonitorRef}),
-                            gen_statem:reply(From, NewWorker),
+                            gen_fsm_compat:reply(From, NewWorker),
                             {next_state, full, State#state{waiting=LeftWaiting}};
                         false ->
                             handle_worker_exit(Pid, StateName, State#state{waiting=LeftWaiting})
@@ -421,7 +423,7 @@ handle_worker_exit(Pid, StateName, State) ->
                             MonitorRef = erlang:monitor(process, FromPid),
                             NewWorker = new_worker(Sup),
                             true = ets:insert(Monitors, {NewWorker, MonitorRef}),
-                            gen_statem:reply(From, NewWorker),
+                            gen_fsm_compat:reply(From, NewWorker),
                             {next_state, full, State#state{waiting=LeftWaiting}};
                         _ ->
                             handle_worker_exit(Pid, StateName, State#state{waiting=LeftWaiting})

@@ -3,7 +3,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(sync(Pid, Event),
-    gen_statem:call(Pid, Event)).
+    gen_fsm_compat:sync_send_all_state_event(Pid, Event)).
 
 pool_test_() ->
     {foreach,
